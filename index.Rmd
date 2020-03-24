@@ -1,0 +1,285 @@
+---
+title: "31HN - ICAT - initial descriptive analysis"
+author: "Tung Trinh"
+date: "2/20/2020"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+---
+# **1. Introduction**
+
+This is a summary of combined 31HN-ICAT dataset written by Tung Trinh in order to explore the data and find useful informations.
+For more information, please contact to tungts@oucru.org.
+
+```{r echo = F, eval = T, warning = F, message=F}
+# required packages 
+library(dplyr)
+library(ggplot2)
+library(sp)
+library(prettymapr)
+library(purrr)
+library(plotly)
+library(DT)
+library(tidyr)
+library(lubridate)
+# library(lubridate)
+# built-in function
+"%notin%" <- Negate("%in%")
+# get the list of finalised files 
+list_file <- list.files("Data", pattern = "31HN_finalised", full.names = T)
+# sort the file based the created time/date 
+file <- list_file[which(file.info(list_file)$mtime == max(file.info(list_file)$mtime))]
+# import the dataset 
+dat <- readRDS(file)
+```
+
+The three districts of Nam Dinh that took part into the study are Nam Truc, Truc Ninh and Y Yen district. 
+```{r echo = F, eval= T, warning = F, message=FALSE}
+# read gadm file of Vietnam
+vn <- readRDS("Data/gadm36_VNM_3_sp.rds")
+# take out Nam Dinh
+NamDinh <- vn[vn@data$NAME_1 == "Nam Định",]
+# the three districts of the study 
+NamTruc <- NamDinh[NamDinh@data$NAME_2 == "Nam Trực",]
+TrucNinh <- NamDinh[NamDinh@data$NAME_2 == "Trực Ninh",]
+YYen <- NamDinh[NamDinh@data$NAME_2 == "Ý Yên",]
+```
+The location of the three districts was described in below figure.
+```{r echo = F, eval = T, warning = F, message=F, height = 8, width = 10, unit = "in"}
+plot(NamDinh, col = "grey80")
+plot(NamTruc, col = "steelblue", add = T)
+plot(TrucNinh, col = "lightpink", add = T)
+plot(YYen, col = "darkgreen", add = T)
+addnortharrow()
+addscalebar()
+legend("bottomright", legend = c("Nam Truc","Truc Ninh","Y Yen"), fill = c("steelblue","lightpink","darkgreen"), box.lty = 0)
+```
+
+
+# **2. Data collection** 
+
+This data is combined from the A1 form and the 79 form from **`r length((unique(dat$location)))`** commune health centers (CHC) from three districts. The data was collected from `r min(dat$date)` to `r max(dat$date)`. 
+
+The **A1** form is the medical tracklog that records the date of visit, visitor informaiton whom visited the CHC for health care seeking, their symptoms and drug prescription. While the **79** form has similar visitor information (insurance card number, date of visist), the information of disease (ICD10 code) and cost of treatment are also recorded for insurance settlement. 
+
+```{r echo = T, eval = T, message=F, warning=F}
+# the total number of records 
+nrow(dat)
+# the total number of records with ICD10 code 
+dat %>% filter(ICD10 %notin% NA) %>% nrow
+```
+
+Age distribution of visitor (unique visitor only)
+```{r echo = F,eval =T, message=F, warning=F}
+dat[-duplicated(dat$ID),] %>% plot_ly(x=~age, type = "histogram", histnorm = "probability")
+```
+We have two age peaks of visitor, the first one is located at the group of **under 18 year olds** which represent for the compulsory education. The second peak is located at older age group, around and after retirement age. However, we should consider the population structure of the commune as the adult might work at other province or at the city or they go to the pharmacy directly.    
+
+# **3. Descriptive analysis**
+
+## **3.1 Frequency of visiting CHC**
+
+The times of visisting CHC per CHC are vary due to its population size. However, the results of some CHC of Y Yen district are extremly low, comparing to other CHC in the same district **(1:20 fold)**.
+
+```{r echo = F, eval = T, message= F, warning =F}
+dat %>% dplyr::group_by(location) %>% dplyr::summarise(count = n()) %>% plot_ly(data = .,  x=~location, y=~count, type = "bar")  
+```
+
+Due to the huge gap between the CHC, we have to look at the duration of data collection per CHC.
+```{r echo = F, eval = T, message=F,warning=F}
+dat %>% dplyr::group_by(location) %>% summarise(min = min(date), max = max(date)) %>% mutate(duration = max - min) %>% plot_ly(x=~location, y=~duration, type = "bar")
+```
+
+Thus, the low visiting ferquency CHCs do only have records for **one month only**. 
+```{r echo = F, eval = T, message=F, warning=F}
+dat %>% group_by(location) %>% summarise(min = min(date), max = max(date)) %>% mutate(duration = max - min) %>% datatable()
+```
+
+So to comparing the CHCs to each other, we turn the data to average CHC visit per month.
+```{r echo = F, eval =T, message=F, warning=F}
+# Calculate the duration per CHC
+duration_per_CHC <- dat %>% group_by(location) %>% summarise(min = min(date), max = max(date)) %>% mutate(duration = max - min) 
+# Calculate average times of visisting per month
+dat %>% group_by(location) %>% summarise(count = n()) %>% left_join(.,duration_per_CHC, by = c("location" = "location")) %>% mutate(average_per_day = count/as.numeric(duration), average_per_month = count/(as.numeric(duration)/30)) %>% plot_ly(x=~location, y=~average_per_month, type = "bar", name = "average visiting CHC by month") %>% add_trace(y=~average_per_day, type = "scatter", name = "average visisting CHC by day") %>% layout(xaxis = list(title = "Commune Health Center"),yaxis = list(title = "Number of visising"))
+```
+
+After normalising the data by month, the number is more reasonable.
+
+## **3.2 Symptom distribution per CHC**
+We investigate the seven symptoms that might related to the use of antibiotic only.These symptoms were extracted from the symptoms and diagnostic tabs from **A1** form. The seven symptoms and theirs porprotion per CHC are represented in the plot below.
+
+```{r echo = F, eval = T, warning= F, message=F}
+dat %>% select(location, starts_with("s.")) %>% group_by(location) %>% summarise_each(funs(no.case = length(which(. == T)),
+                                                                                           no.percent = round(length(which(. == T))/length(.)*100,2))) %>% 
+  plot_ly(x=~location, y=~s.fever_no.percent, type = "bar", name = "fever ") %>% add_trace(y=~s.cough_no.percent, type = "bar", name = "cough") %>% 
+  add_trace(y=~s.sore_throat_no.percent, type = "bar",name = "sore throat") %>% add_trace(y=~s.ear_infection_no.percent, type = "bar", name = "ear infection") %>% 
+  add_trace(y=~s.diarrhea_no.percent, type = "bar", name = "diarrhea") %>% add_trace(y=~s.urinary_infection_no.percent, type = "bar", name = "urinary infection") %>% 
+  add_trace(y=~s.conjunctivitis_no.percent, type = "bar" , name = "conjunctivitis") %>% layout(barmode = "group", xaxis = list(title = "Commune Health Center"), yaxis = list(title = "Percent"))
+```
+The two most common symptoms are **Sore Thoart** and **Cough** and the porprotion of symptoms is vary between commmune health center as well.
+
+## **3.3 Time visiting CHC per person**
+
+```{r echo = F, eval = T, warning = F, message=F}
+dat %>% group_by(ID) %>% summarise(count = n()) %>% plot_ly(x=~count, type = "histogram", histnorm = "probability")
+```
+
+More than 50 percent of the visitor visisted CHC just once or twice, however, there are some visitor visisted more than 12 times a year. The maximum time of visiting CHC in a year is 66 times.
+
+## **3.3 Antibiotic Presciptiion Behaviour**
+
+```{r echo = F, eval =T, warning=F, message=F}
+dat %>% group_by(location) %>% summarise(percent_ab_prescribe = round(length(which(total_ab_used > 0))/n()*100,2)) %>% plot_ly(x =~location,y=~percent_ab_prescribe, type = "bar") %>% layout(xaxis = list(title = "Commune Health Center"), yaxis = list(title = "Percent"))
+```
+
+The antibioitic prescription rate of the CHC are typically high, there just 2 CHC health center that have the antibiotic prescribtion rate below 50% are **NAM THANG** and **NINH CUONG**. In addition, Phuong Dinh is the CHC that have the highest rate of antibiotic prescription, **99.9%**.
+
+Next, we look at the antibiotic prescription rate per symptom per CHC center.
+```{r echo = F, eval=T, warning = F, message=F}
+symp<- dat %>% select(location,starts_with("s.")) %>% group_by(location) %>% summarise_each(funs(total = length(which(. == T))))
+dat %>% filter(total_ab_used > 0) %>% select(location,starts_with("s.")) %>% group_by(location) %>% summarise_each(funs(ab = length(which(. == T)))) %>% left_join(.,symp,by = c("location" = "location")) %>% mutate(s.fever_used = round(s.fever_ab/s.fever_total*100,2),
+                                                                s.cough_used = round(s.cough_ab/s.cough_total*100,2),
+                                                                s.sore_throat_used = round(s.sore_throat_ab/s.sore_throat_total*100,2),
+                                                                s.ear_infection_used = round(s.ear_infection_ab/s.ear_infection_total*100,2),
+                                                                s.diarrhea_used = round(s.diarrhea_ab/s.diarrhea_total*100,2),
+                                                                s.urinary_infection_used = round(s.urinary_infection_ab/s.urinary_infection_total*100,2),
+                                                                s.conjunctivitis_used = round(s.conjunctivitis_ab/s.conjunctivitis_total*100,2)) %>% plot_ly(x=~ location, y=~s.fever_used, type = "bar", name = "Fever") %>% 
+  add_trace(y=~s.cough_used, type = "bar", name = "Cough") %>% 
+  add_trace(y=~s.sore_throat_used, type = "bar", name = "Sore Throat") %>% 
+  add_trace(y=~s.ear_infection_used, type = "bar",name = "Ear Infection") %>% 
+  add_trace(y=~s.diarrhea_used,type = "bar", name = "Diarrhea") %>% 
+  add_trace(y=~s.urinary_infection_used, type = "bar",name = "Urinary Infection") %>% 
+  add_trace(y=~s.conjunctivitis_used, type = "bar",name = "Conjunctivitis") %>% 
+  layout(yaxis = list(title = "Precent"))
+```
+So the rate of antibiotic prescriptionis relatively high despite of the symptoms. In addition, we observed a low antibiotic prescribe rate in **Nam Thang** and **Nam Giang** for fever, **Nam Hoa** for sore throat. The zero percent in some CHC indicate there was no case had that symptoms in their records.
+
+The number of prescriber per CHC 
+```{r echo = F,eval =T, message=F,warning = F}
+dat %>% group_by(location) %>% dplyr::summarise(no.unique_prescriber = length(unique(prescriber)), percent_ab_prescribe = round(length(which(total_ab_used > 0))/n(),2)) %>% plot_ly(x=~location, y=~no.unique_prescriber, type = "bar", name = "number of prescriber") %>% add_trace(y=~percent_ab_prescribe, type = "scatter", name = "rate of antibiotic prescription", yaxis = "y2") %>% layout(xaxis = list(title = "Commune Health Center"), yaxis = list(title = "Number of prescriber"), yaxis2 = list(title = "Percentage of antibiotic prescription", side = "right", overlaying = "y"))
+```
+
+It's not likely that the number of prescriber might affect the antibiotic prescription rate. But the number of prescriber might show the size of each CHC.
+
+The distribution of probability of a prescriber likely prescribe antibiotic
+```{r echo = F, eval=T,message=F, warning=F}
+dat %>% group_by(prescriber) %>% summarise(p.ab_prescribe = round(length(which(total_ab_used > 0))/n()*100,2)) %>%  plot_ly(x =~p.ab_prescribe, type = "histogram",histnorm = "probability") %>% layout(xaxis = list(title = "rate of antibiotic prescription"))
+```
+Around one-ten of the prescriber didn't prescribe any antibiotic while the rest likely to list antibiotic in 2 out of 3 cases.
+
+Time of antibiotic prescribing per month and its average
+```{r echo = F, eval = T, message=F, warning=F}
+dat %>% filter(total_ab_used > 0) %>% mutate(month_date = month(date)) %>% group_by(location,month_date) %>% summarise(count = n()) %>% ungroup %>% group_by(month_date) %>% mutate(average = mean(count)) %>% plot_ly(x =~month_date,y=~count, type = "scatter", name = "count") %>% add_trace(x=~month_date,y=~average,type ="scatter", name = "mean") %>% layout(xaxis = list(title = "Month"))
+```
+No differnece between the times of antibiotic prescription by month. Febuary 2019 was Tet holiday so the time of antibiotic prescription might be lower than the other months.
+
+## **3.4 Type of antibiotic**
+
+There are total of `r length(grep("^ab_", colnames(dat)))` types of antibiotic that had been used in the CHC. The frequency of use is describe in the figure below.
+
+```{r echo = F, eval = T, message=F, warning=F}
+dat %>% select(starts_with("ab_")) %>% summarise_each(funs(freq = length(which(. == T)))) %>% gather(ab, count) %>% 
+  mutate(ab = recode(ab,"ab_Amoxicillin_freq" = "Amoxicillin","ab_Cefalexin_freq" = "Cefalexin",
+                     "ab_Amoxicillin/clavulanicAcid_freq"="Amoxicillin/clavulanicAcid","ab_Cefuroxime_freq" = "Cefuroxime",
+                     "ab_Cefadroxil_freq" = "Cefadroxil","ab_Erythromycin_freq" = "Erythromycin","ab_Cefaclor_freq"= "Cefaclor",
+                     "ab_Chloramphenicol_freq" = "Chloramphenicol","ab_Ciprofloxacin_freq" = "Ciprofloxacin",
+                     "ab_Sulfamethoxazole/trimethoprim_freq" = "Sulfamethoxazole/trimethoprim", 
+                     "ab_Phenoxymethylpenicillin_freq" = "Phenoxymethylpenicillin", 
+                     "ab_Spiramycin/metronidazole_freq" = "Spiramycin/metronidazole","ab_Tetracycline_freq" = "Tetracycline",
+                     "ab_Tobramycin_freq" = "Tobramycin","ab_Metronidazole_freq" = "Metronidazole",
+                     "ab_Clotrimazole/Metronidazole_freq" = "Clotrimazole/Metronidazole",
+                     "ab_Cefradine_freq" = "Cefradine","ab_Amoxicillin/cloxacillin_freq" = "Amoxicillin/cloxacillin",
+                     "ab_Acetylspiramycin/metronidazole_freq"= "Acetylspiramycin/metronidazole"
+                     )) %>% plot_ly(x=~ab,y=~count, type ="bar") %>% layout(xaxis = list(title = "Antibiotic"))
+```
+Thus, **Amoxicillin**,**Cefalexin** and **Sulfamethoxazole/trimethoprim** are the top 3 antibiotic which used frequently in CHC.
+
+The variety of using antibiotic also different between CHC.
+```{r echo = F, eval= T, warning = F, message=F}
+heatmap <- dat %>% select(location, starts_with("ab_")) %>% group_by(location) %>% summarise_each(funs(total = length(.), used = length(which(. == T))))
+# create a NULL dataset to write the data
+dt <- heatmap$location
+# create a for loop to calculate the percentage
+for(i in 2:20){
+  out <- round(heatmap[,i+19]/heatmap[,i]*100,2)
+  dt <- cbind(dt,out)
+}
+# convert the output into a matrix 
+heatmap <- as.matrix(dt[,-1])
+# fix the rowname 
+rownames(heatmap) <- dt$dt
+# plot 
+plot_ly(z = heatmap,y = dt$dt,x = gsub("_used|ab_","",colnames(dt[,-1])),colors = colorRamp(c("gray80","brown")),type = "heatmap") %>% layout(xaxis = list(title = "Type of Antibiotic", zeroline = F, showline = F,showticklabels = F,showgrid = F), yaxis = list(title = "CHC",zeroline = F,showline = F, showticklabels = F, showgrid = F))
+```
+
+The frequency of antibiotic used is also vary by month and by drug
+```{r echo = F, eval = T, warning=F, message=F}
+by_month <- dat %>% mutate(month_visist = month(date)) %>% select(month_visist, starts_with("ab_")) %>% group_by(month_visist) %>% summarise_each(funs(total = length(.), used = length(which(. == T)))) 
+# create a NULL dataset to write the data
+dt <- by_month$month_visist
+# create a for loop to calculate the percentage
+for(i in 2:20){
+  out <- round(by_month[,i+19]/by_month[,i]*100,2)
+  dt <- cbind(dt,out)
+}
+# convert the output into a matrix 
+heatmap <- as.matrix(dt[,-1])
+# plot 
+plot_ly(z = heatmap,y = dt$dt,x = gsub("_used|ab_","",colnames(dt[,-1])),colors = colorRamp(c("gray80","brown")),type = "heatmap") %>% layout(xaxis = list(title = "Type of Antibiotic", zeroline = F, showline = F,showticklabels = F,showgrid = F), yaxis = list(title = "Month",zeroline = F,showline = F, showticklabels = F, showgrid = F))
+```
+
+The total antibiotic combination used
+```{r echo = F, eval=T, warning = F, message=F}
+dat %>% plot_ly(x=~total_ab_used,type = "histogram",histnorm = "probability") %>% layout(xaxis = list(title = "Antibiotic combination"))
+```
+
+Drug combination 
+```{r echo = F, eval=T, warning=F, message=F}
+ab_combi <- dat %>% filter(total_ab_used > 1) %>% select(starts_with("ab_"))
+# create a for loop 
+for(i in 1:ncol(ab_combi)){
+  ab_combi[,i][which(ab_combi[,i] == T)] <- gsub("ab_","",colnames(ab_combi)[i])
+  ab_combi[,i][which(ab_combi[,i] == F)] <- NA
+}
+
+out <- apply(ab_combi,1, function(x) gsub("NA","",paste(x,collapse = " ")))
+data.frame(combination = out) %>% group_by(combination) %>% summarise(count = n()) %>% datatable()
+```
+
+## **3.5 ICD10 code**
+
+This section focus on ICD10 code and its relevant information. The records with ICD10 code will be excluded. 
+The below table show the frequency of each ICD10 and its description for the filtered dataset with average number of drug and antiobiotic prescribed.
+```{r echo = F, eval = T, warning=F,message=F}
+# get the ICD10 database
+source("Scripts/ICD10_database.R")
+ICD10 <- ICD10_database("Data/10_Final_PL10_Danh_muc_benh_theo_ICD_10_20181227103744596590.xlsx")
+# filter the data and add description of ICD10 
+dat %>% filter(ICD10 %notin% NA) %>% group_by(ICD10) %>% summarise(count = n(),mean_ab_used = round(mean(total_ab_used),2), mean_drug_used = round(mean(as.numeric(no.drug_prescribed)),2)) %>% left_join(.,ICD10, by = c("ICD10" = "ICD10")) %>% datatable()
+```
+
+There are **`r length(unique(dat$ICD10))`** unique ICD10 codes in the dataset. 
+
+# **4.PCA analysis on the clustering of number of antibiotic used**
+
+A quick PCA analysis to see the cluster of using number of antibiotic based on the type of antibiotic and symptoms.
+
+```{r echo = F, eval = T, warning= F,message=F}
+library(zoo)
+library(factoextra)
+library(ggbiplot)
+# select dataset 
+selected_dat <- dat %>% dplyr::select(starts_with("ab_"),starts_with("s."), gender,age) %>% 
+  mutate(gender = as.factor(gender)) 
+# get the group 
+groups_ab <- dat %>% mutate(total_ab_used = recode(total_ab_used, "0" = "NO ANTIBIOTIC", "1" = "One Antibiotic", "2" = "More than one","3" = "More than one","4"= "More than one")) %>% pull(total_ab_used)
+# transform the dataset 
+transfomred_dat <- selected_dat %>% map_df(as.numeric) %>% as.data.frame()
+# do the pca 
+pca <- prcomp(transfomred_dat,scale = T)
+# plot the result
+ggbiplot(pca,ellipse = T, groups = groups_ab)
+```
